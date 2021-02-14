@@ -37,7 +37,7 @@ class Mood_Spider(object):
             #解析每条说说的内容
             moods = []
             for mood_text in self.get_mood(page_source):
-                mood = self.analysis_mood(mood_text)
+                mood = self.analysis_mood(mood_text,target_qq)
                 moods.append(mood)
                 self.sem_mood.acquire()
                 self.write_mood(mood)#可视化写入本地
@@ -77,8 +77,9 @@ class Mood_Spider(object):
         return comment_list
 
     #解析一条说说的内容
-    def analysis_mood(self,mood):
+    def analysis_mood(self,mood,qq):
         mood_dict = {}
+
         star = mood.find('"commentlist":[')
         if star>0:
             end = Methods.braket_wife(mood,star,'[') + 1
@@ -89,24 +90,70 @@ class Mood_Spider(object):
         for comment in self.get_comment(comments):
             discuss_list.append(self.analysis_comment(comment))
 
+        if 'has_more_con":1' in mood:
+            tid = re.findall('"tid":"(.*?)"', mood)[0]
+            url = 'https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msgdetail_v6?&g_tk=%s'%self.msg.gtk
+            data = {
+                'tid' : tid,
+                'uin' : qq,
+                't1_source': '1',
+                'not_trunc_con': '1',
+                'hostuin': self.msg.account,
+                'code_version': '1',
+                'format': 'fs',
+                'qzreferrer': 'https://user.qzone.qq.com/%s?ADUIN=%s'
+                              '&ADTAG=CLIENT.'
+                              'QQ.5689_FriendTip.0&ADPUBNO=26978&source=namecardhoverstar' % (qq, self.msg.account)
+            }
+            r = self.msg.s_com.post(url, data)
+            text = r.text
+            if '该条内容已被删除' in text:
+                pass
+            else:
+                mood = text
+
+
         mood = mood.replace(comments,'')
-        mood_dict['content'] = re.findall('"content":"(.*?)","createTime', mood)[0]
+        mood_dict['content'] = re.findall('"content":"(.*?)","createTime', mood)[0].replace('\\n','\n')
         mood_dict['time'] = re.findall('"createTime":"(.*?)","created_time', mood)[0]
-        mood_dict['name'] = re.findall('},"name":"(.*?)","pic', mood)[0]
+        name = re.findall('},"name":"(.*?)","pic', mood)
+        #正常name可以找到，如果是说说被折叠，获取折叠得到的内容以上正则匹配不到
+        if name:
+            mood_dict['name'] = name[0]
+        else:
+            mood_dict['name'] = re.findall('msgTotal.*?,"name":"(.*?)","pic', mood)[0]
         mood_dict['phone'] = re.findall('"source_name":"(.*?)","source_url', mood)[0]  # 手机型号
         pic_total = re.findall('"pictotal":(\d+)', mood)
         if pic_total:
             mood_dict['pic_num'] = pic_total[0]
-        mood_dict['comment_num'] = re.findall('"cmtnum":(\d+)', mood)[0]
+        mood_dict['comment_num'] = len(discuss_list)
+
+        #评论太多可能会被折叠，该网址直通无折叠版本
+        if mood_dict['comment_num'] > 8:
+            tid = re.findall('"tid":"(.*?)"',mood)[0]
+            url = 'https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msgdetail_v6?u' \
+                  'in=%s&tid=%s&t1_source=undefined&ftype=0&sort=0&pos=0&num=20' \
+                  '&g_tk=%s&callback=_preloadCallback&' \
+                  'code_version=1&format=jsonp&need_private_comment=1&g_tk=%s'%(qq,tid,self.msg.gtk,self.msg.gtk)
+            # url = 'https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msgdetail_v6?' \
+            #       'uin=1334994417&tid=f165924ffa94b35f8dad0700&t1_source=undefined&ftype=0&sort=0&pos=0&num=20' \
+            #       '&g_tk=2089793980&callback=_preloadCallback&code_version=1&format=jsonp&need_private_comment=1&g_tk=2089793980'
+            r = self.msg.s_com.get(url)
+            text = r.text
+            star_comment = text.find('"commentlist":[')
+            end_comment = Methods.braket_wife(text,0,'[')
+            comments = text[star_comment:end_comment]
+            discuss_list = []
+            for comment in self.get_comment(comments):
+                discuss_list.append(self.analysis_comment(comment))
+            mood_dict['comment_num'] = len(discuss_list)
+
         mood_dict['transpond_num'] = re.findall('"fwdnum":(\d+)', mood)[0]  # 转发数
         if 'rt_certified' in mood:  # 该说说是转发别人的
             origin = {}
             star = mood.find('rt_certified')
             tra = mood[star:]
-            try:
-                origin['content'] = re.findall('"content":"(.*?)"},"rt_createTime', tra)[0]
-            except:
-                print(tra)
+            origin['content'] = re.findall('"content":"(.*?)"},"rt_createTime', tra)[0].replace('\\n','\n')
             origin['time'] = re.findall('"rt_createTime":"(.*?)","rt_fwdnum', tra)[0]
             origin['name'] = re.findall('"rt_uinname":"(.*?)"', tra)[0]
             origin['phone'] = re.findall('"rt_source_name":"(.*?)"', tra)[0]
